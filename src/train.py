@@ -1,6 +1,7 @@
 """Train the baseline CAE: python -m src.train --help.
 
 Use --smoke-test for a two-image train/validation check without saving files.
+Add --wandb to log epoch metrics and settings to Weights & Biases.
 No anomaly annotations or official test images are loaded.
 """
 
@@ -156,6 +157,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-ratio", type=float, default=0.5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--wandb", action="store_true",
+                        help="Enable optional Weights & Biases experiment tracking.")
+    parser.add_argument("--wandb-project", default="agricultural-anomaly-reconstruction")
+    parser.add_argument("--wandb-entity", default=None, help="Optional W&B team or username.")
+    parser.add_argument("--wandb-name", default=None, help="Optional display name for this run.")
+    parser.add_argument("--wandb-mode", choices=("online", "offline"), default="online",
+                        help="Online syncs to W&B; offline keeps logs locally.")
     parser.add_argument("--smoke-test", action="store_true",
                         help="Check two real images per split, then exit without saving.")
     args = parser.parse_args()
@@ -174,6 +182,29 @@ def parse_args() -> argparse.Namespace:
     if int(args.mask_ratio * (128 // args.patch_size)**2) == 0:
         parser.error("These settings mask zero patches; increase mask-ratio.")
     return args
+
+
+def create_wandb_run(args: argparse.Namespace, config: dict):
+    """Create an optional run context; exiting it finishes logging, even on errors."""
+    if not args.wandb:
+        return nullcontext(None)
+
+    # Keep the dependency optional: ordinary training and smoke tests need no W&B.
+    try:
+        import wandb
+    except ImportError as error:
+        raise RuntimeError(
+            "W&B logging requires wandb. Install it with: python -m pip install wandb"
+        ) from error
+
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_name,
+        mode=args.wandb_mode,
+        config=config,
+        dir=str(args.output_dir),
+    )
 
 
 def smoke_test(model: torch.nn.Module, datasets: dict, args: argparse.Namespace,
@@ -230,7 +261,10 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     config = {key: str(value) if isinstance(value, Path) else value
               for key, value in vars(args).items()}
-    config.update(image_size=128, device=str(device), optimizer="AdamW")
+    config.update(image_size=128, device=str(device), optimizer="AdamW",
+                  train_images=len(datasets["train"]), val_images=len(datasets["val"]),
+                  trainable_parameters=sum(p.numel() for p in model.parameters()
+                                           if p.requires_grad))
     loaders = {split: make_loader(dataset, args, device, training=split == "train")
                for split, dataset in datasets.items()}
     print(f"Train: {len(datasets['train'])}; validation: {len(datasets['val'])}; "
@@ -238,7 +272,9 @@ def main() -> None:
     best_val_loss = float("inf")
 
     # Exclusive creation protects previous history. Flush each completed epoch.
-    with history_path.open("x", newline="", encoding="utf-8") as history_file:
+    with create_wandb_run(args, config) as wandb_run, history_path.open(
+        "x", newline="", encoding="utf-8"
+    ) as history_file:
         writer = csv.writer(history_file)
         writer.writerow(["epoch", "train_loss", "val_loss", "train_skipped_batches",
                          "val_skipped_batches", "seconds"])
@@ -259,9 +295,24 @@ def main() -> None:
                     "seed": args.seed,
                 }, checkpoint_path)
                 best_val_loss = val_loss
+                if wandb_run is not None:
+                    wandb_run.summary["best_val_loss"] = best_val_loss
+                    wandb_run.summary["best_epoch"] = epoch
             elapsed = time.perf_counter() - started
             writer.writerow([epoch, train_loss, val_loss, train_skipped, val_skipped, elapsed])
             history_file.flush()
+            if wandb_run is not None:
+                # One record per epoch keeps logging simple and inexpensive.
+                wandb_run.log({
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "best_val_loss": best_val_loss,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "train_skipped_batches": train_skipped,
+                    "val_skipped_batches": val_skipped,
+                    "epoch_seconds": elapsed,
+                }, step=epoch)
             print(f"Epoch {epoch:02d}/{args.epochs}: train={train_loss:.6f}, "
                   f"val={val_loss:.6f}, best={best_val_loss:.6f}, {elapsed:.1f}s; "
                   f"skipped batches train/val={train_skipped}/{val_skipped}"
