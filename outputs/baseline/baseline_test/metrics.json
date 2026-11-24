@@ -1,0 +1,155 @@
+{
+  "protocol": "single_pass_masked_valid_pixels",
+  "score": "mean RGB squared reconstruction error; higher means more anomalous",
+  "split": "test",
+  "images": 1792,
+  "resolution": [
+    128,
+    128
+  ],
+  "checkpoint": "/kaggle/input/datasets/abelnathanaelh/version-3-output/outputs/baseline/best.pt",
+  "checkpoint_epoch": 30,
+  "checkpoint_sha256": "92d6f11967f1dc22624c99f676e1323191dd88bcb37624e35ae507f083bcda44",
+  "training_seed": 42,
+  "evaluation_seed": 42,
+  "patch_size": 8,
+  "mask_ratio": 0.5,
+  "device": "cuda",
+  "batch_size": 32,
+  "data_dir": "/kaggle/input/datasets/abelnathanaelh/agriculturevision-2017/data2017_miniscale",
+  "split_file": "/kaggle/input/datasets/abelnathanaelh/data2017-splits/data2017_splits.json",
+  "valid_pixels": 26258790,
+  "evaluated_pixels": 13122377,
+  "valid_pixel_coverage": 0.499732737113934,
+  "count_definitions": {
+    "valid_pixels": "All pixels in bounds AND field validity at 128 x 128",
+    "positive_pixels": "Category anomaly pixels among all valid pixels",
+    "evaluated_pixels": "Valid pixels hidden in this single masking pass",
+    "evaluated_positive_pixels": "Category positives within evaluated pixels"
+  },
+  "category_protocol": "one-versus-rest over evaluated pixels, including other anomalies as negatives",
+  "heatmap_color_limits": [
+    0,
+    0.01
+  ],
+  "visualization_selection": "Evenly spaced test indices; independent of labels and scores",
+  "limitations": [
+    "Visible pixels are not evaluated; this is not full-image localization coverage.",
+    "One random mask gives seed-dependent results and may miss small anomalies.",
+    "Nearest-neighbor resizing to 128 x 128 may remove small annotations.",
+    "Category scores share one class-agnostic reconstruction-error map.",
+    "Missing either positive or negative evaluated pixels makes both metrics unavailable."
+  ],
+  "metrics": [
+    {
+      "category": "overall",
+      "valid_pixels": 26258790,
+      "positive_pixels": 6309853,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 3154656,
+      "evaluated_negative_pixels": 9967721,
+      "pixel_auroc": 0.5178165084197909,
+      "average_precision": 0.2442229720679534,
+      "status": "ok"
+    },
+    {
+      "category": "double_plant",
+      "valid_pixels": 26258790,
+      "positive_pixels": 426262,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 210591,
+      "evaluated_negative_pixels": 12911786,
+      "pixel_auroc": 0.5387390689754473,
+      "average_precision": 0.019400166253933586,
+      "status": "ok"
+    },
+    {
+      "category": "drydown",
+      "valid_pixels": 26258790,
+      "positive_pixels": 4774877,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 2387800,
+      "evaluated_negative_pixels": 10734577,
+      "pixel_auroc": 0.5104134266858996,
+      "average_precision": 0.1779022198654878,
+      "status": "ok"
+    },
+    {
+      "category": "endrow",
+      "valid_pixels": 26258790,
+      "positive_pixels": 55595,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 27535,
+      "evaluated_negative_pixels": 13094842,
+      "pixel_auroc": 0.6280004951925722,
+      "average_precision": 0.006305832653581563,
+      "status": "ok"
+    },
+    {
+      "category": "nutrient_deficiency",
+      "valid_pixels": 26258790,
+      "positive_pixels": 0,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 0,
+      "evaluated_negative_pixels": 13122377,
+      "pixel_auroc": null,
+      "average_precision": null,
+      "status": "no_positive_pixels"
+    },
+    {
+      "category": "planter_skip",
+      "valid_pixels": 26258790,
+      "positive_pixels": 48746,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 25134,
+      "evaluated_negative_pixels": 13097243,
+      "pixel_auroc": 0.6884047841147986,
+      "average_precision": 0.00953981292088824,
+      "status": "ok"
+    },
+    {
+      "category": "storm_damage",
+      "valid_pixels": 26258790,
+      "positive_pixels": 0,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 0,
+      "evaluated_negative_pixels": 13122377,
+      "pixel_auroc": null,
+      "average_precision": null,
+      "status": "no_positive_pixels"
+    },
+    {
+      "category": "water",
+      "valid_pixels": 26258790,
+      "positive_pixels": 0,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 0,
+      "evaluated_negative_pixels": 13122377,
+      "pixel_auroc": null,
+      "average_precision": null,
+      "status": "no_positive_pixels"
+    },
+    {
+      "category": "waterway",
+      "valid_pixels": 26258790,
+      "positive_pixels": 0,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 0,
+      "evaluated_negative_pixels": 13122377,
+      "pixel_auroc": null,
+      "average_precision": null,
+      "status": "no_positive_pixels"
+    },
+    {
+      "category": "weed_cluster",
+      "valid_pixels": 26258790,
+      "positive_pixels": 1020664,
+      "evaluated_pixels": 13122377,
+      "evaluated_positive_pixels": 511752,
+      "evaluated_negative_pixels": 12610625,
+      "pixel_auroc": 0.5123470393207489,
+      "average_precision": 0.041351187831107666,
+      "status": "ok"
+    }
+  ]
+}

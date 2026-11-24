@@ -1,4 +1,4 @@
-"""Train the baseline CAE: python -m src.train --help.
+"""Train the CAE with baseline MSE or adapted ASL: python -m src.train --help.
 
 Use --smoke-test for a two-image train/validation check without saving files.
 Add --wandb to log epoch metrics and settings to Weights & Biases.
@@ -19,7 +19,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from .dataset import AgricultureVisionDataset
-from .losses import masked_reconstruction_loss
+from .losses import anomaly_suppression_loss, masked_reconstruction_loss
 from .masking import random_patch_mask
 from .model import ConvolutionalAutoencoder
 
@@ -99,8 +99,15 @@ def make_loader(dataset: Dataset, args: argparse.Namespace, device: torch.device
 
 def run_epoch(model: torch.nn.Module, loader: DataLoader, device: torch.device,
               patch_size: int, mask_ratio: float,
-              optimizer: torch.optim.Optimizer | None = None) -> tuple[float, int]:
-    """Train or validate once; return selected-pixel mean loss and skipped batches."""
+              optimizer: torch.optim.Optimizer | None = None,
+              loss_name: str = "mse") -> tuple[float, int]:
+    """Return optimization loss for training, ordinary MSE for validation.
+
+    Both losses are averaged over selected pixels. Validation always uses the
+    baseline masked-valid MSE, even if loss_name is 'asl'.
+    """
+    if loss_name not in ("mse", "asl"):
+        raise ValueError("loss_name must be 'mse' or 'asl'.")
     training = optimizer is not None
     model.train(training)
     total_squared_error = 0.0
@@ -126,7 +133,10 @@ def run_epoch(model: torch.nn.Module, loader: DataLoader, device: torch.device,
             if training:
                 optimizer.zero_grad(set_to_none=True)
             reconstruction = model(masked_images)
-            loss = masked_reconstruction_loss(reconstruction, targets, mask, valid_mask)
+            if training and loss_name == "asl":
+                loss = anomaly_suppression_loss(reconstruction, targets, mask, valid_mask)
+            else:
+                loss = masked_reconstruction_loss(reconstruction, targets, mask, valid_mask)
             if not torch.isfinite(loss).item():
                 raise RuntimeError("Non-finite reconstruction loss; stopping this run.")
             if training:
@@ -143,12 +153,23 @@ def run_epoch(model: torch.nn.Module, loader: DataLoader, device: torch.device,
     return total_squared_error / total_selected_values, skipped_batches
 
 
+def training_phase(epoch: int, loss_name: str, warmup_epochs: int) -> str:
+    """ASL uses ordinary MSE for epochs 1..warmup_epochs, then adapted ASL."""
+    if loss_name == "mse":
+        return "mse"
+    return "warmup" if epoch <= warmup_epochs else "asl"
+
+
 def parse_args() -> argparse.Namespace:
     """Read settings without requiring code edits or absolute platform paths."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("data/raw/data2017_miniscale"))
     parser.add_argument("--split-file", type=Path, default=Path("data/raw/data2017_splits.json"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/baseline"))
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Defaults to outputs/baseline for MSE or outputs/asl for ASL.")
+    parser.add_argument("--loss", choices=("mse", "asl"), default="mse")
+    parser.add_argument("--warmup-epochs", type=int, default=3,
+                        help="Initial MSE epochs for --loss asl (default: 3).")
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=30)
@@ -167,6 +188,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smoke-test", action="store_true",
                         help="Check two real images per split, then exit without saving.")
     args = parser.parse_args()
+    if args.output_dir is None:
+        args.output_dir = Path("outputs/asl" if args.loss == "asl" else "outputs/baseline")
+    baseline_dir = Path("outputs/baseline").resolve()
+    if args.loss == "asl" and args.output_dir.resolve().is_relative_to(baseline_dir):
+        parser.error("ASL outputs must be outside outputs/baseline; use outputs/asl.")
+    if args.warmup_epochs < 0 or (args.loss == "asl" and args.epochs <= args.warmup_epochs):
+        parser.error("ASL requires 0 <= warmup-epochs < epochs.")
     if args.batch_size <= 0 or args.epochs <= 0 or args.num_workers < 0:
         parser.error("batch-size/epochs must be positive; num-workers must be nonnegative.")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
@@ -209,7 +237,7 @@ def create_wandb_run(args: argparse.Namespace, config: dict):
 
 def smoke_test(model: torch.nn.Module, datasets: dict, args: argparse.Namespace,
                device: torch.device, optimizer: torch.optim.Optimizer) -> None:
-    """Exercise one real training batch and one validation batch without saving."""
+    """Check one batch per optimization phase and one validation batch; save nothing."""
     args.batch_size = 2
     for split, dataset in datasets.items():
         image, target, valid_mask = dataset[0]
@@ -225,16 +253,24 @@ def smoke_test(model: torch.nn.Module, datasets: dict, args: argparse.Namespace,
                            training=split == "train")
         for split, dataset in datasets.items()
     }
-    before = [parameter.detach().clone() for parameter in model.parameters()]
-    train_loss, _ = run_epoch(model, loaders["train"], device, args.patch_size,
-                              args.mask_ratio, optimizer)
-    assert any(not torch.equal(old, new) for old, new in zip(before, model.parameters()))
-    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+    # These represent phase boundaries, not full epochs: each loader has two images.
+    phase_epochs = [1]
+    if args.loss == "asl" and args.warmup_epochs > 0:
+        phase_epochs.append(args.warmup_epochs + 1)
+    for epoch in phase_epochs:
+        phase = training_phase(epoch, args.loss, args.warmup_epochs)
+        optimization_loss = "asl" if phase == "asl" else "mse"
+        before = [parameter.detach().clone() for parameter in model.parameters()]
+        train_loss, _ = run_epoch(model, loaders["train"], device, args.patch_size,
+                                  args.mask_ratio, optimizer, loss_name=optimization_loss)
+        assert any(not torch.equal(old, new) for old, new in zip(before, model.parameters()))
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+        print(f"Smoke phase={phase}: optimization loss={train_loss:.6f}; "
+              "forward/backward/AdamW step succeeded.")
     before_validation = [p.detach().clone() for p in model.parameters()]
     val_loss, _ = run_epoch(model, loaders["val"], device, args.patch_size, args.mask_ratio)
     assert all(torch.equal(old, new) for old, new in zip(before_validation, model.parameters()))
-    print(f"Smoke test PASS: train MSE={train_loss:.6f}, val MSE={val_loss:.6f}; "
-          "forward/loss/backward/AdamW step succeeded; validation parameters unchanged. "
+    print(f"Smoke test PASS: val MSE={val_loss:.6f}; validation parameters unchanged. "
           "No files saved.")
 
 
@@ -247,6 +283,7 @@ def main() -> None:
         split: DatasetWithValidMasks(split, args.data_dir, args.split_file)
         for split in ("train", "val")
     }
+    # Every run starts from seeded random weights. Never load the MSE checkpoint.
     model = ConvolutionalAutoencoder().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate,
                                   weight_decay=args.weight_decay)
@@ -265,11 +302,20 @@ def main() -> None:
                   train_images=len(datasets["train"]), val_images=len(datasets["val"]),
                   trainable_parameters=sum(p.numel() for p in model.parameters()
                                            if p.requires_grad))
+    config.update(initialization="random_from_scratch", checkpoint_selection_metric="val_mse")
+    if args.loss == "asl":
+        config.update(asl_weight_rule="per_image_selected_max_minus_error",
+                      asl_error_reduction="mean_RGB_squared_error",
+                      asl_weight_normalization="mean_one_per_image_selected_pixels",
+                      asl_weight_update="every_training_batch_detached",
+                      asl_uniform_fallback="ordinary_MSE_if_mean_raw_weight_le_1e-8",
+                      asl_epsilon=1e-8)
     loaders = {split: make_loader(dataset, args, device, training=split == "train")
                for split, dataset in datasets.items()}
     print(f"Train: {len(datasets['train'])}; validation: {len(datasets['val'])}; "
-          f"outputs: {args.output_dir}")
+          f"outputs: {args.output_dir}; loss={args.loss}; fresh random initialization")
     best_val_loss = float("inf")
+    best_phase = None
 
     # Exclusive creation protects previous history. Flush each completed epoch.
     with create_wandb_run(args, config) as wandb_run, history_path.open(
@@ -277,11 +323,16 @@ def main() -> None:
     ) as history_file:
         writer = csv.writer(history_file)
         writer.writerow(["epoch", "train_loss", "val_loss", "train_skipped_batches",
-                         "val_skipped_batches", "seconds"])
+                         "val_skipped_batches", "seconds", "phase",
+                         "optimization_loss", "val_mse"])
         for epoch in range(1, args.epochs + 1):
             started = time.perf_counter()
+            phase = training_phase(epoch, args.loss, args.warmup_epochs)
+            optimization_loss = "asl" if phase == "asl" else "mse"
             train_loss, train_skipped = run_epoch(
-                model, loaders["train"], device, args.patch_size, args.mask_ratio, optimizer)
+                model, loaders["train"], device, args.patch_size, args.mask_ratio, optimizer,
+                loss_name=optimization_loss)
+            # Keep validation and checkpoint selection identical to the MSE baseline.
             val_loss, val_skipped = run_epoch(
                 model, loaders["val"], device, args.patch_size, args.mask_ratio)
             improved = val_loss < best_val_loss
@@ -291,15 +342,22 @@ def main() -> None:
                     "optimizer_state_dict": optimizer.state_dict(),
                     "epoch": epoch,
                     "val_loss": val_loss,
+                    "val_mse": val_loss,
+                    "optimization_loss": train_loss,
+                    "phase": phase,
                     "config": config,
                     "seed": args.seed,
                 }, checkpoint_path)
                 best_val_loss = val_loss
+                best_phase = phase
                 if wandb_run is not None:
                     wandb_run.summary["best_val_loss"] = best_val_loss
+                    wandb_run.summary["best_val_mse"] = best_val_loss
                     wandb_run.summary["best_epoch"] = epoch
+                    wandb_run.summary["best_phase"] = phase
             elapsed = time.perf_counter() - started
-            writer.writerow([epoch, train_loss, val_loss, train_skipped, val_skipped, elapsed])
+            writer.writerow([epoch, train_loss, val_loss, train_skipped, val_skipped, elapsed,
+                             phase, train_loss, val_loss])
             history_file.flush()
             if wandb_run is not None:
                 # One record per epoch keeps logging simple and inexpensive.
@@ -307,16 +365,25 @@ def main() -> None:
                     "epoch": epoch,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
+                    "optimization_loss": train_loss,
+                    "val_mse": val_loss,
+                    "phase": phase,
+                    "asl_active": int(phase == "asl"),
+                    "warmup_active": int(phase == "warmup"),
                     "best_val_loss": best_val_loss,
                     "learning_rate": optimizer.param_groups[0]["lr"],
                     "train_skipped_batches": train_skipped,
                     "val_skipped_batches": val_skipped,
                     "epoch_seconds": elapsed,
                 }, step=epoch)
-            print(f"Epoch {epoch:02d}/{args.epochs}: train={train_loss:.6f}, "
-                  f"val={val_loss:.6f}, best={best_val_loss:.6f}, {elapsed:.1f}s; "
+            print(f"Epoch {epoch:02d}/{args.epochs} phase={phase}: "
+                  f"optimization_loss={train_loss:.6f}, val_MSE={val_loss:.6f}, "
+                  f"best_val_MSE={best_val_loss:.6f}, {elapsed:.1f}s; "
                   f"skipped batches train/val={train_skipped}/{val_skipped}"
                   + ("; saved best.pt" if improved else ""), flush=True)
+        if args.loss == "asl" and best_phase == "warmup":
+            print("Note: the best validation-MSE checkpoint is from warm-up, before ASL. "
+                  "This phase is recorded in the checkpoint and W&B summary.")
 
 
 if __name__ == "__main__":
