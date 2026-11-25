@@ -10,6 +10,8 @@ __pycache__/
 outputs/
 /results/
 /results.zip
+/create-handover.md
+/plan.md
 *.pt
 # Small diagnostic input tensors are evidence, not model weights.
 !experiments/overfit_diagnostic/selected_tensors.pt
