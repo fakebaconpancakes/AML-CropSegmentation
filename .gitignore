@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 outputs/
+/results/
+/results.zip
 *.pt
 *.pth
 *.tmp

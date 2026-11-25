@@ -1,0 +1,17 @@
+[
+  {
+    "sample_id": "18AHEU2IH_2097-5236-2609-5748",
+    "figure": "sample_18AHEU2IH_2097-5236-2609-5748.png",
+    "contains_planter_skip": false
+  },
+  {
+    "sample_id": "ITHX3ZRHL_2039-479-2551-991",
+    "figure": "sample_ITHX3ZRHL_2039-479-2551-991.png",
+    "contains_planter_skip": false
+  },
+  {
+    "sample_id": "4LLRYH2IF_1336-2465-1848-2977",
+    "figure": "sample_4LLRYH2IF_1336-2465-1848-2977.png",
+    "contains_planter_skip": true
+  }
+]

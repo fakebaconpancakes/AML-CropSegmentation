@@ -1,0 +1,97 @@
+{
+  "per_class": [
+    {
+      "id": 0,
+      "class": "Normal farmland",
+      "iou": 0.7342859447583353,
+      "dice": 0.8467876326595666,
+      "support_pixels": 79796047
+    },
+    {
+      "id": 1,
+      "class": "Drydown",
+      "iou": 0.41174059617145414,
+      "dice": 0.5833091394949852,
+      "support_pixels": 19100416
+    },
+    {
+      "id": 2,
+      "class": "Double plant",
+      "iou": 0.0012074669147324444,
+      "dice": 0.0024120213934346896,
+      "support_pixels": 1639161
+    },
+    {
+      "id": 3,
+      "class": "Weed cluster",
+      "iou": 0.013831716222238088,
+      "dice": 0.027286019959561203,
+      "support_pixels": 4078844
+    },
+    {
+      "id": 4,
+      "class": "Planter skip",
+      "iou": 0.0,
+      "dice": 0.0,
+      "support_pixels": 194504
+    }
+  ],
+  "mean_iou": 0.23221314481335198,
+  "anomaly_mean_iou": 0.10669494482710618,
+  "mean_iou_classes": [
+    "Normal farmland",
+    "Drydown",
+    "Double plant",
+    "Weed cluster",
+    "Planter skip"
+  ],
+  "pixel_accuracy": 0.7605748007909094,
+  "valid_pixels": 104808972,
+  "confusion_matrix": [
+    [
+      67998359,
+      8934524,
+      546771,
+      2316393,
+      0
+    ],
+    [
+      7354906,
+      11623948,
+      109190,
+      12372,
+      0
+    ],
+    [
+      1531506,
+      13655,
+      2866,
+      91134,
+      0
+    ],
+    [
+      3735328,
+      182618,
+      71008,
+      89890,
+      0
+    ],
+    [
+      186953,
+      28,
+      7434,
+      89,
+      0
+    ]
+  ],
+  "checkpoint": "/kaggle/working/agriculture_segmentation/best.pt",
+  "checkpoint_sha256": "1751a4bbf5f2a67e66b893e6fa0b79c33f6e2430cf22b47650c82295b291c29b",
+  "selected_epoch": 21,
+  "best_validation_mean_iou": 0.22338263206009903,
+  "split": "test",
+  "split_fingerprint": "3ee33e649122cb4d8caa49d690de6e56dcb4b3f9fab90ad7f96b35dc6e2a8d67",
+  "image_size": 256,
+  "ignore_index": 255,
+  "device": "cuda",
+  "torch_version": "2.11.0+cu130"
+}
