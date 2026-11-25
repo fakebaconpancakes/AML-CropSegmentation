@@ -194,7 +194,9 @@ def train(config, resume=None):
         "python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__,
         "pillow": PIL.__version__, "matplotlib": mpl.__version__, "tqdm": tqdm_package.__version__,
         "device": str(device), "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
-        "cuda_runtime": torch.version.cuda, "deterministic_algorithms": True,
+        "cuda_runtime": torch.version.cuda,
+        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+        "deterministic_warn_only": torch.is_deterministic_algorithms_warn_only_enabled(),
         "split_fingerprint": fingerprint, "schema": SCHEMA})
 
     def checkpoint(epoch):

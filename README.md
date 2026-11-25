@@ -81,7 +81,7 @@ Checkpoint writes use atomic replacement. `last.pt` embeds the best model so res
 
 Save a Kaggle notebook version with outputs, or download artifacts before ending the runtime. Discarded sessions do not preserve `/kaggle/working/`. Attach the saved `last.pt` as Kaggle input and set `RESUME_FROM` in the notebook. If the saved run was already finally evaluated, preserve its `test/` results too. Resume at epoch boundaries; unfinished epochs restart from the last completed checkpoint.
 
-Deterministic algorithms and worker seeding are enabled. Exact continuation depends on matching hardware, library versions, and worker settings. Actual software/device metadata is saved in `environment.json`. Kaggle's preinstalled CUDA-enabled PyTorch is retained rather than replaced.
+Worker seeding is enabled and deterministic algorithms are preferred with `warn_only=True`. Some CUDA builds lack a deterministic NLL/Cross-Entropy kernel, so those operations emit a warning instead of stopping training. Exact CUDA numerical reproducibility is not guaranteed. Exact continuation depends on matching hardware, library versions, and worker settings. Actual determinism settings and software/device metadata are saved in `environment.json`. Kaggle's preinstalled CUDA-enabled PyTorch is retained rather than replaced.
 
 ## Verification and status
 

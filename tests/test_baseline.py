@@ -170,6 +170,8 @@ class BaselineTests(unittest.TestCase):
 
     def test_rng_roundtrip(self):
         seed_everything(42)
+        self.assertTrue(torch.are_deterministic_algorithms_enabled())
+        self.assertTrue(torch.is_deterministic_algorithms_warn_only_enabled())
         generators = {"train": torch.Generator().manual_seed(123)}
         state = capture_rng(generators)
         expected = (random.random(), np.random.rand(), torch.rand(1),

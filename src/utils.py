@@ -30,7 +30,9 @@ def seed_everything(seed):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-    torch.use_deterministic_algorithms(True)
+    # Some Kaggle CUDA builds lack deterministic NLL/Cross-Entropy kernels.
+    # Prefer deterministic kernels where available; warn rather than abort otherwise.
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
 
 def choose_device(name="auto"):

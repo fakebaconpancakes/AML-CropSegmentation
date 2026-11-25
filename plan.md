@@ -183,3 +183,5 @@ The full scan of 4,505 training targets passed at 256 x 256. The batch was `[8, 
 | Planter skip | 207,336 | 0.0809% | 3.000000 |
 
 Ignored training pixels: 38,843,058. Report: `outputs/data_validation/report.json`. The training alignment figure was inspected. These are dataset statistics and pipeline checks, not trained model results. Local PyTorch is CPU-only; GPU checks and actual training remain pending in Kaggle.
+
+CUDA compatibility fix: deterministic algorithms now use `warn_only=True`, allowing CUDA NLL/Cross-Entropy kernels without deterministic implementations. Seeds and cuDNN deterministic settings remain enabled; environment metadata records warning mode. Exact CUDA numerical reproducibility is not guaranteed.
