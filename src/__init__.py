@@ -1,1 +1,1 @@
-"""Data loading utilities for the agricultural anomaly reconstruction project."""
+"""RGB agricultural anomaly segmentation baseline."""

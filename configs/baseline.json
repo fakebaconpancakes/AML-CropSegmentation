@@ -1,0 +1,19 @@
+{
+  "data_dir": "/kaggle/input/datasets/abelnathanaelh/agriculture-vision-2017/data2017_miniscale",
+  "split_file": "/kaggle/input/datasets/abelnathanaelh/data2017-splits/data2017_splits.json",
+  "output_dir": "/kaggle/working/agriculture_segmentation",
+  "expected_counts": {"train": 4505, "val": 2048, "test": 1792},
+  "image_size": 256,
+  "native_size": 512,
+  "base_channels": 32,
+  "batch_size": 8,
+  "num_workers": 2,
+  "seed": 42,
+  "epochs": 30,
+  "learning_rate": 0.001,
+  "weight_cap": 3.0,
+  "early_stopping_patience": 7,
+  "scheduler_patience": 3,
+  "scheduler_factor": 0.5,
+  "device": "auto"
+}

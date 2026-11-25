@@ -1,389 +1,271 @@
-"""Train the CAE with baseline MSE or adapted ASL: python -m src.train --help.
-
-Use --smoke-test for a two-image train/validation check without saving files.
-Add --wandb to log epoch metrics and settings to Weights & Biases.
-No anomaly annotations or official test images are loaded.
-"""
+"""Plain PyTorch training. Test pixels are never accessed here."""
 
 import argparse
-import csv
-import math
-import random
-import time
-from contextlib import nullcontext
+import copy
+import json
+import platform
 from pathlib import Path
 
 import numpy as np
+import PIL
 import torch
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch import nn
+from tqdm.auto import tqdm
 
-from .dataset import AgricultureVisionDataset
-from .losses import anomaly_suppression_loss, masked_reconstruction_loss
-from .masking import random_patch_mask
-from .model import ConvolutionalAutoencoder
+from .dataset import (AgricultureVisionDataset, CLASSES, SELECTED, EXCLUDED,
+                      IGNORE_INDEX, check_batch, index_splits, make_loader)
+from .model import UNet
+from .utils import (atomic_checkpoint, capture_rng, choose_device, confusion_matrix,
+                    load_checkpoint, metrics_from_confusion, plot_history, plot_sample,
+                    restore_rng, save_csv, save_json, seed_everything)
 
-
-def set_seed(seed: int) -> None:
-    """Seed model initialization, masking, and other random operations."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
+SCHEMA = {"classes": list(CLASSES), "selected": list(SELECTED), "excluded": list(EXCLUDED),
+          "ignore_index": IGNORE_INDEX, "target_version": 1,
+          "validity": "field_masks==255 AND field_bounds==255"}
 
 
-def seed_worker(worker_id: int) -> None:
-    """Give each DataLoader worker a reproducible NumPy/Python seed."""
-    worker_seed = torch.initial_seed() % (2**32)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-
-
-def load_valid_mask(data_dir: Path, image_path: Path) -> torch.Tensor:
-    """Read matching PNGs and return a binary (1, 128, 128) float32 tensor."""
-    filename = image_path.with_suffix(".png").name
-    bounds_path = data_dir / "field_bounds" / filename
-    mask_path = data_dir / "field_masks" / filename
-    with Image.open(bounds_path) as bounds, Image.open(mask_path) as validity:
-        with Image.open(image_path) as rgb:
-            if bounds.size != validity.size or bounds.size != rgb.size:
-                raise ValueError(f"RGB/bounds/validity sizes differ for {image_path.name}")
-        if bounds.mode != "L" or validity.mode != "L":
-            raise ValueError(f"Expected single-channel bounds/validity for {filename}")
-        bounds_pixels = np.array(bounds)
-        validity_pixels = np.array(validity)
-
-    # Keep only pixels where BOTH original source masks equal 255.
-    valid = (bounds_pixels == 255) & (validity_pixels == 255)
-    binary_image = Image.fromarray(valid.astype(np.uint8))
-    binary_image = binary_image.resize((128, 128), resample=Image.Resampling.NEAREST)
-    return torch.from_numpy(np.array(binary_image, dtype=np.float32)).unsqueeze(0)
-
-
-class DatasetWithValidMasks(Dataset):
-    """Add lazily loaded valid masks to the existing official-split dataset."""
-
-    def __init__(self, split: str, data_dir: Path, split_file: Path) -> None:
-        if split not in ("train", "val"):
-            raise ValueError("Training supports only the official train and val splits.")
-        self.images = AgricultureVisionDataset(split, data_dir, split_file)
-        self.data_dir = Path(data_dir)
-
-    def __len__(self) -> int:
-        return len(self.images)
-
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        image, target = self.images[index]
-        # Use the exact path at this index; never glob or reorder masks separately.
-        valid_mask = load_valid_mask(self.data_dir, self.images.image_paths[index])
-        return image, target, valid_mask
-
-
-def make_loader(dataset: Dataset, args: argparse.Namespace, device: torch.device,
-                training: bool) -> DataLoader:
-    """Shuffle training images only; seed workers independently of masking."""
-    generator = torch.Generator().manual_seed(args.seed + (0 if training else 1))
-    return DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=training,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-        worker_init_fn=seed_worker,
-        generator=generator,
-    )
-
-
-def run_epoch(model: torch.nn.Module, loader: DataLoader, device: torch.device,
-              patch_size: int, mask_ratio: float,
-              optimizer: torch.optim.Optimizer | None = None,
-              loss_name: str = "mse") -> tuple[float, int]:
-    """Return optimization loss for training, ordinary MSE for validation.
-
-    Both losses are averaged over selected pixels. Validation always uses the
-    baseline masked-valid MSE, even if loss_name is 'asl'.
-    """
-    if loss_name not in ("mse", "asl"):
-        raise ValueError("loss_name must be 'mse' or 'asl'.")
-    training = optimizer is not None
-    model.train(training)
-    total_squared_error = 0.0
-    total_selected_values = 0
-    skipped_batches = 0
-    non_blocking = device.type == "cuda"
-
-    # Validation explicitly disables autograd and never calls the optimizer.
-    with nullcontext() if training else torch.no_grad():
-        for images, targets, valid_mask in loader:
-            images = images.to(device, non_blocking=non_blocking)
-            targets = targets.to(device, non_blocking=non_blocking)
-            valid_mask = valid_mask.to(device, non_blocking=non_blocking)
-            masked_images, mask = random_patch_mask(images, patch_size, mask_ratio)
-
-            # A random mask can miss all valid pixels in a batch. Skip it openly
-            # rather than inventing a loss value or changing the random selection.
-            selected_pixels = int((mask.bool() & valid_mask.bool()).sum().item())
-            if selected_pixels == 0:
-                skipped_batches += 1
-                continue
-
-            if training:
-                optimizer.zero_grad(set_to_none=True)
-            reconstruction = model(masked_images)
-            if training and loss_name == "asl":
-                loss = anomaly_suppression_loss(reconstruction, targets, mask, valid_mask)
-            else:
-                loss = masked_reconstruction_loss(reconstruction, targets, mask, valid_mask)
-            if not torch.isfinite(loss).item():
-                raise RuntimeError("Non-finite reconstruction loss; stopping this run.")
-            if training:
-                loss.backward()
-                optimizer.step()
-
-            # Weight by the number of selected RGB values, not the batch size.
-            selected_values = selected_pixels * targets.shape[1]
-            total_squared_error += loss.item() * selected_values
-            total_selected_values += selected_values
-
-    if total_selected_values == 0:
-        raise ValueError("Entire epoch has no masked valid pixels; check masks/settings.")
-    return total_squared_error / total_selected_values, skipped_batches
-
-
-def training_phase(epoch: int, loss_name: str, warmup_epochs: int) -> str:
-    """ASL uses ordinary MSE for epochs 1..warmup_epochs, then adapted ASL."""
-    if loss_name == "mse":
-        return "mse"
-    return "warmup" if epoch <= warmup_epochs else "asl"
-
-
-def parse_args() -> argparse.Namespace:
-    """Read settings without requiring code edits or absolute platform paths."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("data/raw/data2017_miniscale"))
-    parser.add_argument("--split-file", type=Path, default=Path("data/raw/data2017_splits.json"))
-    parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Defaults to outputs/baseline for MSE or outputs/asl for ASL.")
-    parser.add_argument("--loss", choices=("mse", "asl"), default="mse")
-    parser.add_argument("--warmup-epochs", type=int, default=3,
-                        help="Initial MSE epochs for --loss asl (default: 3).")
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--patch-size", type=int, default=8)
-    parser.add_argument("--mask-ratio", type=float, default=0.5)
-    parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--wandb", action="store_true",
-                        help="Enable optional Weights & Biases experiment tracking.")
-    parser.add_argument("--wandb-project", default="agricultural-anomaly-reconstruction")
-    parser.add_argument("--wandb-entity", default=None, help="Optional W&B team or username.")
-    parser.add_argument("--wandb-name", default=None, help="Optional display name for this run.")
-    parser.add_argument("--wandb-mode", choices=("online", "offline"), default="online",
-                        help="Online syncs to W&B; offline keeps logs locally.")
-    parser.add_argument("--smoke-test", action="store_true",
-                        help="Check two real images per split, then exit without saving.")
-    args = parser.parse_args()
-    if args.output_dir is None:
-        args.output_dir = Path("outputs/asl" if args.loss == "asl" else "outputs/baseline")
-    baseline_dir = Path("outputs/baseline").resolve()
-    if args.loss == "asl" and args.output_dir.resolve().is_relative_to(baseline_dir):
-        parser.error("ASL outputs must be outside outputs/baseline; use outputs/asl.")
-    if args.warmup_epochs < 0 or (args.loss == "asl" and args.epochs <= args.warmup_epochs):
-        parser.error("ASL requires 0 <= warmup-epochs < epochs.")
-    if args.batch_size <= 0 or args.epochs <= 0 or args.num_workers < 0:
-        parser.error("batch-size/epochs must be positive; num-workers must be nonnegative.")
-    if not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
-        parser.error("learning-rate must be finite and positive.")
-    if not math.isfinite(args.weight_decay) or args.weight_decay < 0:
-        parser.error("weight-decay must be finite and nonnegative.")
-    if not 0 <= args.seed < 2**32:
-        parser.error("seed must be between 0 and 2**32 - 1.")
-    if args.patch_size <= 0 or 128 % args.patch_size != 0:
-        parser.error("patch-size must be positive and divide 128 evenly.")
-    if not 0 < args.mask_ratio <= 1:
-        parser.error("mask-ratio must be greater than 0 and at most 1.")
-    if int(args.mask_ratio * (128 // args.patch_size)**2) == 0:
-        parser.error("These settings mask zero patches; increase mask-ratio.")
-    return args
-
-
-def create_wandb_run(args: argparse.Namespace, config: dict):
-    """Create an optional run context; exiting it finishes logging, even on errors."""
-    if not args.wandb:
-        return nullcontext(None)
-
-    # Keep the dependency optional: ordinary training and smoke tests need no W&B.
-    try:
-        import wandb
-    except ImportError as error:
-        raise RuntimeError(
-            "W&B logging requires wandb. Install it with: python -m pip install wandb"
-        ) from error
-
-    return wandb.init(
-        project=args.wandb_project,
-        entity=args.wandb_entity,
-        name=args.wandb_name,
-        mode=args.wandb_mode,
-        config=config,
-        dir=str(args.output_dir),
-    )
-
-
-def smoke_test(model: torch.nn.Module, datasets: dict, args: argparse.Namespace,
-               device: torch.device, optimizer: torch.optim.Optimizer) -> None:
-    """Check one batch per optimization phase and one validation batch; save nothing."""
-    args.batch_size = 2
-    for split, dataset in datasets.items():
-        image, target, valid_mask = dataset[0]
-        assert image.shape == target.shape == (3, 128, 128)
-        assert valid_mask.shape == (1, 128, 128)
-        assert valid_mask.dtype == torch.float32
-        assert ((valid_mask == 0) | (valid_mask == 1)).all()
-        print(f"{split}: {len(dataset)} images; valid mask {tuple(valid_mask.shape)}, "
-              f"binary float32; valid fraction {valid_mask.mean().item():.4f}")
-
-    loaders = {
-        split: make_loader(Subset(dataset, range(min(2, len(dataset)))), args, device,
-                           training=split == "train")
-        for split, dataset in datasets.items()
-    }
-    # These represent phase boundaries, not full epochs: each loader has two images.
-    phase_epochs = [1]
-    if args.loss == "asl" and args.warmup_epochs > 0:
-        phase_epochs.append(args.warmup_epochs + 1)
-    for epoch in phase_epochs:
-        phase = training_phase(epoch, args.loss, args.warmup_epochs)
-        optimization_loss = "asl" if phase == "asl" else "mse"
-        before = [parameter.detach().clone() for parameter in model.parameters()]
-        train_loss, _ = run_epoch(model, loaders["train"], device, args.patch_size,
-                                  args.mask_ratio, optimizer, loss_name=optimization_loss)
-        assert any(not torch.equal(old, new) for old, new in zip(before, model.parameters()))
-        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
-        print(f"Smoke phase={phase}: optimization loss={train_loss:.6f}; "
-              "forward/backward/AdamW step succeeded.")
-    before_validation = [p.detach().clone() for p in model.parameters()]
-    val_loss, _ = run_epoch(model, loaders["val"], device, args.patch_size, args.mask_ratio)
-    assert all(torch.equal(old, new) for old, new in zip(before_validation, model.parameters()))
-    print(f"Smoke test PASS: val MSE={val_loss:.6f}; validation parameters unchanged. "
-          "No files saved.")
-
-
-def main() -> None:
-    args = parse_args()
-    set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}; seed: {args.seed}")
+def prepare_datasets(config):
+    paths, fingerprint = index_splits(config["data_dir"], config["split_file"],
+                                       config["expected_counts"])
+    print("Official image counts:", {k: len(v) for k, v in paths.items()})
     datasets = {
-        split: DatasetWithValidMasks(split, args.data_dir, args.split_file)
+        split: AgricultureVisionDataset(config["data_dir"], paths[split], split,
+                                        config["image_size"], config["native_size"],
+                                        augment=(split == "train"))
         for split in ("train", "val")
     }
-    # Every run starts from seeded random weights. Never load the MSE checkpoint.
-    model = ConvolutionalAutoencoder().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate,
-                                  weight_decay=args.weight_decay)
-    if args.smoke_test:
-        smoke_test(model, datasets, args, device, optimizer)
-        return
+    return datasets, fingerprint
 
-    checkpoint_path = args.output_dir / "best.pt"
-    history_path = args.output_dir / "history.csv"
-    if checkpoint_path.exists() or history_path.exists():
-        raise FileExistsError("Run outputs already exist. Choose a new --output-dir.")
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    config = {key: str(value) if isinstance(value, Path) else value
-              for key, value in vars(args).items()}
-    config.update(image_size=128, device=str(device), optimizer="AdamW",
-                  train_images=len(datasets["train"]), val_images=len(datasets["val"]),
-                  trainable_parameters=sum(p.numel() for p in model.parameters()
-                                           if p.requires_grad))
-    config.update(initialization="random_from_scratch", checkpoint_selection_metric="val_mse")
-    if args.loss == "asl":
-        config.update(asl_weight_rule="per_image_selected_max_minus_error",
-                      asl_error_reduction="mean_RGB_squared_error",
-                      asl_weight_normalization="mean_one_per_image_selected_pixels",
-                      asl_weight_update="every_training_batch_detached",
-                      asl_uniform_fallback="ordinary_MSE_if_mean_raw_weight_le_1e-8",
-                      asl_epsilon=1e-8)
-    loaders = {split: make_loader(dataset, args, device, training=split == "train")
-               for split, dataset in datasets.items()}
-    print(f"Train: {len(datasets['train'])}; validation: {len(datasets['val'])}; "
-          f"outputs: {args.output_dir}; loss={args.loss}; fresh random initialization")
-    best_val_loss = float("inf")
-    best_phase = None
 
-    # Exclusive creation protects previous history. Flush each completed epoch.
-    with create_wandb_run(args, config) as wandb_run, history_path.open(
-        "x", newline="", encoding="utf-8"
-    ) as history_file:
-        writer = csv.writer(history_file)
-        writer.writerow(["epoch", "train_loss", "val_loss", "train_skipped_batches",
-                         "val_skipped_batches", "seconds", "phase",
-                         "optimization_loss", "val_mse"])
-        for epoch in range(1, args.epochs + 1):
-            started = time.perf_counter()
-            phase = training_phase(epoch, args.loss, args.warmup_epochs)
-            optimization_loss = "asl" if phase == "asl" else "mse"
-            train_loss, train_skipped = run_epoch(
-                model, loaders["train"], device, args.patch_size, args.mask_ratio, optimizer,
-                loss_name=optimization_loss)
-            # Keep validation and checkpoint selection identical to the MSE baseline.
-            val_loss, val_skipped = run_epoch(
-                model, loaders["val"], device, args.patch_size, args.mask_ratio)
-            improved = val_loss < best_val_loss
+def class_weights(dataset, cap=3.0):
+    if dataset.split != "train":
+        raise ValueError("Class frequencies must come exclusively from the training split.")
+    if cap <= 0:
+        raise ValueError("Weight cap must be positive.")
+    counts = np.zeros(5, dtype=np.int64)
+    ignored = 0
+    for index in tqdm(range(len(dataset)), desc="Training pixel distribution"):
+        target = dataset.load_target(index)
+        valid = target != IGNORE_INDEX
+        counts += np.bincount(target[valid], minlength=5)
+        ignored += int((~valid).sum())
+    if (counts == 0).any():
+        missing = [CLASSES[i] for i in np.where(counts == 0)[0]]
+        raise ValueError(f"No supervised training pixels for {missing}. Check masks and resizing.")
+    frequencies = counts / counts.sum()
+    inverse = 1.0 / np.sqrt(frequencies)
+    weights = np.minimum(inverse / inverse.mean(), cap).astype(np.float32)
+    distribution = {"counts": counts.tolist(), "frequencies": frequencies.tolist(),
+                    "ignored_pixels": ignored, "weights": weights.tolist(),
+                    "source_split": "train", "image_size": dataset.image_size,
+                    "weight_cap": cap}
+    print("Class | pixels | frequency | weight")
+    for name, count, freq, weight in zip(CLASSES, counts, frequencies, weights):
+        print(f"{name:16s} {count:12,d} {freq:.6f} {weight:.4f}")
+    print(f"Ignored training pixels: {ignored:,}")
+    return torch.tensor(weights), distribution
+
+
+def run_epoch(model, loader, weights, device, optimizer=None, collect_metrics=True):
+    training = optimizer is not None
+    model.train(training)
+    criterion = nn.CrossEntropyLoss(weight=weights, ignore_index=IGNORE_INDEX, reduction="sum")
+    total_loss, total_weight, skipped = 0.0, 0.0, 0
+    matrix = torch.zeros((5, 5), dtype=torch.int64)
+    context = torch.enable_grad() if training else torch.no_grad()
+    with context:
+        for images, targets in tqdm(loader, desc="Train" if training else "Validate", leave=False):
+            images = images.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            valid = targets != IGNORE_INDEX
+            if not valid.any():
+                skipped += 1
+                continue
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+            logits = model(images)
+            loss_sum = criterion(logits, targets)
+            denominator = weights[targets[valid]].sum()
+            loss = loss_sum / denominator
+            if not torch.isfinite(loss):
+                raise RuntimeError("Nonfinite loss; inspect inputs, logits, and class weights.")
+            if training:
+                loss.backward()
+                if not all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None):
+                    raise RuntimeError("Nonfinite gradients.")
+                optimizer.step()
+            total_loss += loss_sum.detach().item()
+            total_weight += denominator.item()
+            if collect_metrics:
+                matrix += confusion_matrix(logits.detach().argmax(1), targets)
+    if total_weight == 0:
+        raise ValueError("Epoch has no supervised pixels; all targets are ignored.")
+    return total_loss / total_weight, matrix, skipped
+
+
+def compatible_config(current, saved):
+    # Paths may change when attaching a saved run to a fresh Kaggle session.
+    mutable = {"data_dir", "split_file", "output_dir", "epochs", "device"}
+    if {k: v for k, v in current.items() if k not in mutable} != {
+            k: v for k, v in saved.items() if k not in mutable}:
+        raise ValueError("Resume configuration changed training/preprocessing settings.")
+
+
+def validate_config(config):
+    for key in ("image_size", "native_size", "base_channels", "batch_size", "epochs",
+                "early_stopping_patience"):
+        if not isinstance(config[key], int) or config[key] <= 0:
+            raise ValueError(f"{key} must be a positive integer.")
+    if config["image_size"] % 16:
+        raise ValueError("image_size must be divisible by 16.")
+    if config["num_workers"] < 0 or config["learning_rate"] <= 0 or config["weight_cap"] <= 0:
+        raise ValueError("Invalid worker count, learning rate, or weight cap.")
+    if not 0 < config["scheduler_factor"] < 1 or config["scheduler_patience"] < 0:
+        raise ValueError("Invalid scheduler factor or patience.")
+    output = Path(config["output_dir"]).resolve()
+    root = Path(config["data_dir"]).resolve()
+    if output == root or root in output.parents:
+        raise ValueError("Outputs must not be written inside the input dataset.")
+    if str(output).replace("\\", "/").startswith("/kaggle/input/"):
+        raise ValueError("Kaggle input is read-only; save under /kaggle/working/.")
+
+
+def train(config, resume=None):
+    """Run or resume at epoch boundaries; return paths to best and latest checkpoints."""
+    config = copy.deepcopy(config)
+    validate_config(config)
+    seed_everything(config["seed"])
+    device = choose_device(config["device"])
+    output = Path(config["output_dir"])
+    output.mkdir(parents=True, exist_ok=True)
+    if resume is None and any((output / name).exists() for name in ("last.pt", "best.pt", "history.csv")):
+        raise FileExistsError("Run already exists. Resume last.pt or choose a new output directory.")
+    datasets, fingerprint = prepare_datasets(config)
+    generators = {split: torch.Generator().manual_seed(config["seed"] + i)
+                  for i, split in enumerate(("train", "val"))}
+    loaders = {split: make_loader(ds, config["batch_size"], config["num_workers"],
+                                 generators[split], device.type == "cuda")
+               for split, ds in datasets.items()}
+    # Inspect a separate deterministic sample, without advancing loader or augmentation RNGs.
+    sanity = AgricultureVisionDataset(config["data_dir"], datasets["train"].image_paths[:1],
+                                      "train", config["image_size"], config["native_size"])
+    image, target = sanity[0]
+    check_batch(image[None], target[None], config["image_size"])
+    print("Sanity shapes:", tuple(image[None].shape), tuple(target[None].shape),
+          "labels:", target.unique().tolist())
+    plot_sample(image.numpy(), target.numpy(), target.numpy(), output / "training_sanity.png",
+                "Training sample alignment (prediction panels repeat target)")
+    model = UNet(config["base_channels"]).to(device)
+    print(f"Device: {device}; model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=config["scheduler_factor"], patience=config["scheduler_patience"])
+    history, start_epoch, best_score, bad_epochs = [], 0, -1.0, 0
+    best_model, best_epoch = None, 0
+    if resume:
+        state = load_checkpoint(resume)
+        if not state.get("resume_capable", False):
+            raise ValueError("Resume training from last.pt; best.pt is for final evaluation.")
+        compatible_config(config, state["config"])
+        if state["schema"] != SCHEMA or state["split_fingerprint"] != fingerprint:
+            raise ValueError("Resume class semantics or official split identity changed.")
+        model.load_state_dict(state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        # Optimizer.load_state_dict moves parameter state to the parameter device.
+        scheduler.load_state_dict(state["scheduler"])
+        history = state["history"]
+        start_epoch, best_score = state["epoch"], state["best_score"]
+        bad_epochs = state["bad_epochs"]
+        best_model, best_epoch = state["best_model"], state["best_epoch"]
+        weights = state["weights"].to(device)
+        distribution = state["distribution"]
+        if config["epochs"] < start_epoch:
+            raise ValueError("epochs is a total budget and cannot precede the resumed epoch.")
+        restore_rng(state["rng"], generators)
+        print(f"Resuming after epoch {start_epoch}; best validation mIoU={best_score:.6f}")
+    else:
+        weights, distribution = class_weights(datasets["train"], config["weight_cap"])
+        weights = weights.to(device)
+    save_json(output / "config.json", config)
+    save_json(output / "class_distribution.json", distribution)
+    import matplotlib as mpl
+    import tqdm as tqdm_package
+    save_json(output / "environment.json", {
+        "python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__,
+        "pillow": PIL.__version__, "matplotlib": mpl.__version__, "tqdm": tqdm_package.__version__,
+        "device": str(device), "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+        "cuda_runtime": torch.version.cuda, "deterministic_algorithms": True,
+        "split_fingerprint": fingerprint, "schema": SCHEMA})
+
+    def checkpoint(epoch):
+        return {"format_version": 1, "resume_capable": True,
+                "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(), "epoch": epoch,
+                "best_score": best_score, "bad_epochs": bad_epochs,
+                "best_model": best_model, "best_epoch": best_epoch,
+                "weights": weights.detach().cpu(), "distribution": distribution,
+                "config": config, "schema": SCHEMA, "split_fingerprint": fingerprint,
+                "history": history, "rng": capture_rng(generators)}
+
+    def save_best():
+        # Embed the selected weights in last.pt so resume into a new directory needs only one file.
+        atomic_checkpoint(output / "best.pt", {
+            "format_version": 1, "resume_capable": False,
+            "model": best_model, "epoch": best_epoch, "best_score": best_score,
+            "config": config, "schema": SCHEMA, "split_fingerprint": fingerprint,
+            "weights": weights.detach().cpu(), "distribution": distribution})
+
+    if best_model is not None:
+        save_best()
+    if bad_epochs >= config["early_stopping_patience"]:
+        print("Early stopping was already reached in this checkpoint; no additional training.")
+    else:
+        for epoch in range(start_epoch + 1, config["epochs"] + 1):
+            used_lr = optimizer.param_groups[0]["lr"]
+            train_loss, _, skipped_train = run_epoch(model, loaders["train"], weights, device,
+                                                    optimizer, collect_metrics=False)
+            val_loss, matrix, skipped_val = run_epoch(model, loaders["val"], weights, device)
+            score = metrics_from_confusion(matrix)["mean_iou"]
+            improved = score > best_score
             if improved:
-                torch.save({
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "val_loss": val_loss,
-                    "val_mse": val_loss,
-                    "optimization_loss": train_loss,
-                    "phase": phase,
-                    "config": config,
-                    "seed": args.seed,
-                }, checkpoint_path)
-                best_val_loss = val_loss
-                best_phase = phase
-                if wandb_run is not None:
-                    wandb_run.summary["best_val_loss"] = best_val_loss
-                    wandb_run.summary["best_val_mse"] = best_val_loss
-                    wandb_run.summary["best_epoch"] = epoch
-                    wandb_run.summary["best_phase"] = phase
-            elapsed = time.perf_counter() - started
-            writer.writerow([epoch, train_loss, val_loss, train_skipped, val_skipped, elapsed,
-                             phase, train_loss, val_loss])
-            history_file.flush()
-            if wandb_run is not None:
-                # One record per epoch keeps logging simple and inexpensive.
-                wandb_run.log({
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "optimization_loss": train_loss,
-                    "val_mse": val_loss,
-                    "phase": phase,
-                    "asl_active": int(phase == "asl"),
-                    "warmup_active": int(phase == "warmup"),
-                    "best_val_loss": best_val_loss,
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                    "train_skipped_batches": train_skipped,
-                    "val_skipped_batches": val_skipped,
-                    "epoch_seconds": elapsed,
-                }, step=epoch)
-            print(f"Epoch {epoch:02d}/{args.epochs} phase={phase}: "
-                  f"optimization_loss={train_loss:.6f}, val_MSE={val_loss:.6f}, "
-                  f"best_val_MSE={best_val_loss:.6f}, {elapsed:.1f}s; "
-                  f"skipped batches train/val={train_skipped}/{val_skipped}"
-                  + ("; saved best.pt" if improved else ""), flush=True)
-        if args.loss == "asl" and best_phase == "warmup":
-            print("Note: the best validation-MSE checkpoint is from warm-up, before ASL. "
-                  "This phase is recorded in the checkpoint and W&B summary.")
+                best_score, bad_epochs, best_epoch = score, 0, epoch
+                best_model = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                bad_epochs += 1
+            scheduler.step(score)
+            row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss,
+                   "val_mean_iou": score, "learning_rate": used_lr,
+                   "next_learning_rate": optimizer.param_groups[0]["lr"],
+                   "skipped_train_batches": skipped_train, "skipped_val_batches": skipped_val}
+            history.append(row)
+            atomic_checkpoint(output / "last.pt", checkpoint(epoch))
+            if improved:
+                save_best()
+            save_csv(output / "history.csv", history)
+            plot_history(history, output / "learning_curves.png")
+            print(f"Epoch {epoch}/{config['epochs']}: train={train_loss:.5f}, val={val_loss:.5f}, "
+                  f"val mIoU={score:.5f}, lr={used_lr:.6g}")
+            if bad_epochs >= config["early_stopping_patience"]:
+                print(f"Early stopping. Best epoch: {best_epoch}")
+                break
+    # Also materialize the full resumed state if the requested epoch budget was already complete.
+    if start_epoch and len(history) == start_epoch:
+        atomic_checkpoint(output / "last.pt", checkpoint(start_epoch))
+        save_csv(output / "history.csv", history)
+        plot_history(history, output / "learning_curves.png")
+    if not (output / "best.pt").exists():
+        raise RuntimeError("No best checkpoint was produced.")
+    return {"best": output / "best.pt", "last": output / "last.pt", "history": history}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/baseline.json")
+    parser.add_argument("--resume", default=None)
+    args = parser.parse_args()
+    with open(args.config, encoding="utf-8") as handle:
+        config = json.load(handle)
+    train(config, args.resume)
 
 
 if __name__ == "__main__":
