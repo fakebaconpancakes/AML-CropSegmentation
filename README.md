@@ -2,6 +2,20 @@
 
 Supervised RGB semantic segmentation for Agriculture-Vision 2017 miniscale using a standard randomly initialized U-Net. No reconstruction components or pretrained weights.
 
+## Current handover
+
+Use Git tag **`experiment-2-handover-v1`** for the complete handover snapshot. Read [EXPERIMENT_2_HANDOVER.md](EXPERIMENT_2_HANDOVER.md) first. It includes a Quick Start and the agreed 256 x 256, 50%-valid, 10-retry/fallback sampling defaults. Experiment 2 itself is not implemented yet.
+
+The repository includes the completed [baseline evidence](experiments/baseline/) and [overfit diagnostic evidence](experiments/overfit_diagnostic/), along with diagnostic source/tests. The diagnostic memorized all five classes; its training-subset scores are not generalization results. The small `selected_tensors.pt` is intentionally tracked as input evidence, while large model checkpoints and raw downloads remain ignored.
+
+Build a complete Kaggle upload archive from that fixed revision with:
+
+```bash
+python scripts/package_handover.py --ref experiment-2-handover-v1 --update-kaggle-alias
+```
+
+This creates `outputs/experiment_2_handover_v1.zip` with baseline/diagnostic evidence, all tracked project source, the handover guide, and `HANDOVER_VERSION.json` containing the exact commit and per-file checksums. It also updates `outputs/kaggle_source.zip` to the same complete archive and writes SHA-256 sidecars. Generated ZIPs stay out of Git because they are reproducible from the tag. Do not run the baseline notebook unchanged for Experiment 2; it would retrain the baseline and evaluate the test set.
+
 ## Project layout
 
 - `src/dataset.py`: official field splits, priority-safe targets, synchronized augmentation.
@@ -14,7 +28,7 @@ Supervised RGB semantic segmentation for Agriculture-Vision 2017 miniscale using
 - `scripts/`: preserved legacy split/filename diagnostics and `validate_dataset.py` for training-only data validation. No dependency on `old_project/`.
 - `tests/test_baseline.py`: synthetic correctness and integration checks.
 
-## Kaggle Run All
+## Kaggle Run All (baseline reference; do not rerun for handover)
 
 1. Upload `src/`, `configs/`, and `requirements.txt` together as a Kaggle code dataset, retaining their directory structure. Attach it alongside Agriculture-Vision 2017 miniscale and the official split JSON.
 2. Import `notebooks/kaggle_baseline.ipynb`, enable a GPU accelerator, and select Run All. The notebook locates the code dataset and copies source to `/kaggle/working/agriculture_code`. It uses Kaggle's installed PyTorch and needs no internet or previous-session variables.
@@ -85,6 +99,6 @@ Worker seeding is enabled and deterministic algorithms are preferred with `warn_
 
 ## Verification and status
 
-Synthetic tests cover target priority, resizing, augmentation, split validation, metrics, ignored-pixel gradients, all-ignored batches, RNG restoration, continuous versus resumed training, and evaluation/figure export. Real-data validation and actual GPU training are separate checks. No segmentation performance is claimed before the full Kaggle run.
+Synthetic tests cover target priority, resizing, augmentation, split validation, metrics, ignored-pixel gradients, all-ignored batches, RNG restoration, continuous versus resumed training, and evaluation/figure export. The completed Kaggle baseline and the separate CPU diagnostic are documented in `experiments/`; preserve those results and do not retrain them for handover. The new diagnostic tests also check fixed-crop alignment, training-only selection, loss equivalence, and protection against overwriting existing artifacts.
 
 NIR, anomaly-aware patch sampling, pretrained encoders, attention, and alternative losses are deferred. Use validation evidence to plan improvements and reserve the official test set for final reporting.

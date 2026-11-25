@@ -1,0 +1,87 @@
+{
+  "per_class": [
+    {
+      "id": 0,
+      "class": "Normal farmland",
+      "iou": 0.61541748046875,
+      "dice": 0.7619299505044017,
+      "support_pixels": 10083
+    },
+    {
+      "id": 1,
+      "class": "Drydown",
+      "iou": 0.0,
+      "dice": 0.0,
+      "support_pixels": 2086
+    },
+    {
+      "id": 2,
+      "class": "Double plant",
+      "iou": 0.0,
+      "dice": 0.0,
+      "support_pixels": 1670
+    },
+    {
+      "id": 3,
+      "class": "Weed cluster",
+      "iou": 0.0,
+      "dice": 0.0,
+      "support_pixels": 501
+    },
+    {
+      "id": 4,
+      "class": "Planter skip",
+      "iou": 0.0,
+      "dice": 0.0,
+      "support_pixels": 2044
+    }
+  ],
+  "mean_iou": 0.12308349609375,
+  "anomaly_mean_iou": 0.0,
+  "mean_iou_classes": [
+    "Normal farmland",
+    "Drydown",
+    "Double plant",
+    "Weed cluster",
+    "Planter skip"
+  ],
+  "pixel_accuracy": 0.61541748046875,
+  "valid_pixels": 16384,
+  "confusion_matrix": [
+    [
+      10083,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      2086,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      1670,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      501,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      2044,
+      0,
+      0,
+      0,
+      0
+    ]
+  ]
+}

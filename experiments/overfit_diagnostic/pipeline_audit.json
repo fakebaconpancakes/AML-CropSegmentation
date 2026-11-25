@@ -1,0 +1,42 @@
+{
+  "baseline_source_modified": false,
+  "pipeline_reused": [
+    "AgricultureVisionDataset",
+    "construct_target (through Dataset)",
+    "UNet(base_channels=32)",
+    "class_weights",
+    "confusion_matrix",
+    "metrics_from_confusion",
+    "plot_sample",
+    "atomic_checkpoint",
+    "seed_everything"
+  ],
+  "mask_priority": "outside field_masks/field_bounds OR excluded mask OR overlap among selected classes -> 255; assigned last",
+  "original_target_classes": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    255
+  ],
+  "selection": "Only the first 81 official training targets were read for crop selection; validation/test filenames were inventoried but their pixels were not opened.",
+  "tests_passed": [
+    "Existing native mask ignore-priority test",
+    "Existing U-Net loss/backward and ignored-pixel test",
+    "Existing known confusion-matrix/metric test",
+    "Four new diagnostic selection, loss-equivalence, and crop-alignment tests"
+  ],
+  "note": "Fixed crops are a deliberately easier memorization problem; this diagnostic does not measure generalization or implement Experiment 2.",
+  "baseline_evidence_sha256": {
+    "config.json": "b000dd3bbb6508d055713f5dba501ee7bb2f10ba1198f6c911a298f207e8d767",
+    "history.csv": "d4f7c79e83b7c370bbf7cdd3c05ab3cc5ac447a7ae9ca37fe94cc36ab4bb13df",
+    "class_distribution.json": "ccffb6fec89dd03f2f1bc1b453c02d902aafbd769cc6a45de601bcbafee50954",
+    "test/metrics.json": "a418e1f6dbb077fd14546ae404023d45459b2c77aeed93bfbe9e341ce456cce0",
+    "test/confusion_matrix.csv": "4f76d43eb7fbe5ac20e7b03168620286cf5f02b5eaf068fe7a06431095945994"
+  },
+  "saved_checkpoint_metrics_reproduced_exactly": true,
+  "checkpoint_step": 660,
+  "baseline_evidence_unchanged_after_diagnostic": true,
+  "checkpoint_sha256": "c10b5b55926cedc4d0f120f3deaa409f315a1857fceab25ce91a4373006d9210"
+}

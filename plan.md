@@ -2,7 +2,7 @@
 
 ## Scope and current repository
 
-Build a simple supervised RGB semantic segmentation baseline for Agriculture-Vision 2017 miniscale. The implementation is now present; full Kaggle GPU training and final official test evaluation remain pending. No trained segmentation performance is claimed.
+Build a simple supervised RGB semantic segmentation baseline for Agriculture-Vision 2017 miniscale. The baseline implementation, Kaggle GPU training, and final official test evaluation are complete. See `experiments/baseline/` for measured results and `experiments/overfit_diagnostic/` for the completed training-only sanity check. Experiment 2 is not implemented; its handover is `EXPERIMENT_2_HANDOVER.md` at tag `experiment-2-handover-v1`.
 
 Repository inspection on 2026-11-25:
 
@@ -147,7 +147,7 @@ Normal farmland means valid field pixels with no selected or excluded anomaly an
 - [x] Check model output shape, weighted loss/backward, ignored-pixel contribution, and all-ignored handling.
 - [x] Test confusion-matrix orientation, known IoU/Dice values, ignore filtering, absent classes, and equality between batched and whole-set accumulation.
 - [x] Test checkpoint round-trip and epoch-boundary continuation, including optimizer/scheduler state, best score, early-stop counter, history, and RNG restoration.
-- [x] Run a small CPU integration smoke run covering training, checkpoint reload, evaluation, and figure saving; follow with Kaggle GPU sanity checks before the 30-epoch run (still pending on Kaggle).
+- [x] Run a small CPU integration smoke run covering training, checkpoint reload, evaluation, and figure saving; follow with Kaggle GPU sanity checks before the baseline run (completed).
 
 ## Completion criteria and deferred work
 
@@ -163,12 +163,12 @@ After the baseline, analyze validation results and rare-class failures to decide
 - Official local split inventories match 4,505 / 2,048 / 1,792; all nine annotation folders have complete file coverage. Validity is the intersection of white field-mask and white boundary pixels, per the dataset team.
 - All 11 tests passed, covering priority rules, transformations, metrics, gradients, scheduler/early stopping, checkpoint continuation with zero and two workers, and fresh-kernel notebook execution. The verification log is `outputs/verification-tests.log`.
 - Every notebook code cell has executed in a fresh kernel against synthetic CPU data with only mount paths, accelerator, and experiment scale substituted. This verifies the workflow, not actual Kaggle GPU behavior.
-- [ ] Complete the actual fresh-session Kaggle GPU run and save training artifacts.
-- [ ] Evaluate the validation-selected checkpoint once on the official test set and record measured results.
+- [x] Complete the actual fresh-session Kaggle GPU run and save training artifacts (early stopped after epoch 28; best epoch 21).
+- [x] Evaluate the validation-selected checkpoint once on the official test set and record measured results (23.22% test mean IoU; archived in `experiments/baseline/`).
 
-Checked implementation items above describe delivered code and local checks; they do not claim completion of the two actual experiment steps listed here.
+The baseline experiment is complete. The separate four-crop overfit diagnostic also passed; its scores are memorization results, not validation/test performance. Experiment 2 remains a proposed implementation task.
 
-The upload-ready shared code bundle is `outputs/kaggle_source.zip`; attach its extracted contents as a Kaggle dataset.
+The complete shared source/evidence bundle is `outputs/experiment_2_handover_v1.zip`, with identical alias `outputs/kaggle_source.zip`. Rebuild from Git tag `experiment-2-handover-v1` using `scripts/package_handover.py`; its manifest records the exact commit and file checksums.
 
 ## Real training-data validation
 
@@ -182,6 +182,6 @@ The full scan of 4,505 training targets passed at 256 x 256. The batch was `[8, 
 | Weed cluster | 11,204,336 | 4.3699% | 0.475000 |
 | Planter skip | 207,336 | 0.0809% | 3.000000 |
 
-Ignored training pixels: 38,843,058. Report: `outputs/data_validation/report.json`. The training alignment figure was inspected. These are dataset statistics and pipeline checks, not trained model results. Local PyTorch is CPU-only; GPU checks and actual training remain pending in Kaggle.
+Ignored training pixels: 38,843,058. Report: `outputs/data_validation/report.json`. The training alignment figure was inspected. These are dataset statistics and pipeline checks, not trained model results. Local PyTorch remains CPU-only; the actual GPU baseline was subsequently completed in Kaggle and its evidence is in `experiments/baseline/`.
 
 CUDA compatibility fix: deterministic algorithms now use `warn_only=True`, allowing CUDA NLL/Cross-Entropy kernels without deterministic implementations. Seeds and cuDNN deterministic settings remain enabled; environment metadata records warning mode. Exact CUDA numerical reproducibility is not guaranteed.

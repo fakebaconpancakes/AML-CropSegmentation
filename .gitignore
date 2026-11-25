@@ -11,5 +11,7 @@ outputs/
 /results/
 /results.zip
 *.pt
+# Small diagnostic input tensors are evidence, not model weights.
+!experiments/overfit_diagnostic/selected_tensors.pt
 *.pth
 *.tmp

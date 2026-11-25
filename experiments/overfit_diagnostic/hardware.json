@@ -1,0 +1,17 @@
+{
+  "python": "3.13.5",
+  "torch": "2.15.0+cpu",
+  "cpu": "Intel64 Family 6 Model 189 Stepping 1, GenuineIntel",
+  "logical_cpus": 8,
+  "cuda_available": false,
+  "gpus": [],
+  "ram_total_bytes": 33873780736,
+  "ram_available_bytes": 9485160448,
+  "cpu_name_windows": "Intel(R) Core(TM) Ultra 7 258V",
+  "physical_cores": 8,
+  "windows_gpu_name": "Intel(R) Arc(TM) 140V GPU (16GB)",
+  "windows_gpu_adapter_ram_bytes": 2147479552,
+  "gpu_memory_note": "Windows AdapterRAM reports approximately 2 GiB; the GPU name contains 16GB. This is an integrated GPU and these values do not establish dedicated VRAM. CUDA VRAM is not applicable.",
+  "torch_in_default_python": false,
+  "installed_packages_changed": false
+}

@@ -1,0 +1,51 @@
+{
+  "data_dir": "data/raw/data2017_miniscale",
+  "split_file": "data/raw/data2017_splits.json",
+  "device": "auto",
+  "threads": 4,
+  "crop_size": 64,
+  "minimum_class_pixels": 128,
+  "max_scan": 256,
+  "max_steps": 800,
+  "max_seconds": 300,
+  "check_every": 20,
+  "target_iou": 0.9,
+  "success_checks": 3,
+  "seed": 42,
+  "learning_rate": 0.001,
+  "base_channels": 32,
+  "schema": {
+    "classes": [
+      "Normal farmland",
+      "Drydown",
+      "Double plant",
+      "Weed cluster",
+      "Planter skip"
+    ],
+    "selected": [
+      "drydown",
+      "double_plant",
+      "weed_cluster",
+      "planter_skip"
+    ],
+    "excluded": [
+      "endrow",
+      "storm_damage",
+      "water",
+      "nutrient_deficiency",
+      "waterway"
+    ],
+    "ignore_index": 255,
+    "target_version": 1,
+    "validity": "field_masks==255 AND field_bounds==255"
+  },
+  "split_fingerprint": "3ee33e649122cb4d8caa49d690de6e56dcb4b3f9fab90ad7f96b35dc6e2a8d67",
+  "training_targets_scanned": 81,
+  "augmentation": false,
+  "image_preprocessing": "Baseline bilinear RGB / nearest target resize to 256, then FIXED crop",
+  "class_weights_source": "Selected training subset, existing inverse-sqrt/cap implementation",
+  "initialization": "Random seed 42; no baseline checkpoint or pretrained weights",
+  "success_definition": "Every class IoU >= threshold for consecutive measured checks",
+  "purpose": "Memorization diagnostic only; not a generalization experiment",
+  "selected_tensors_sha256": "ba199cd9c7ba2ffd733892b71c8f3c8734cb7274f214bb012f660109e9e626bb"
+}

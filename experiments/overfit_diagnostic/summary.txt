@@ -1,0 +1,21 @@
+Small training-subset overfit diagnostic
+
+Result: PASS
+Stop reason: all_classes_memorized; steps: 700; selected checkpoint step: 660
+Unchanged U-Net: 7,760,229 parameters; device: cpu
+No baseline checkpoint, augmentation, validation, or test content was used.
+
+Normal farmland: IoU=0.9900, Dice=0.9950, pixels=10083
+Drydown: IoU=0.9952, Dice=0.9976, pixels=2086
+Double plant: IoU=0.9806, Dice=0.9902, pixels=1670
+Weed cluster: IoU=0.9432, Dice=0.9708, pixels=501
+Planter skip: IoU=0.9865, Dice=0.9932, pixels=2044
+
+Interpretation: All five classes can be memorized on these fixed crops. This argues against a gross class-channel/loss/gradient failure, but does not establish full-image generalization or rule out every annotation issue. Validation-based patch-sampling investigation is reasonable.
+These are training memorization metrics, not validation/test performance.
+
+Hardware: Intel Core Ultra 7 258V (8 cores), Intel Arc 140V integrated GPU; PyTorch 2.15.0+cpu in .venv. CUDA unavailable. Approximately 31.5 GiB RAM total and 8.8 GiB available at preparation. No packages installed or upgraded.
+Training stopped at step 700 after three consecutive checks (660/680/700) with every class above 0.90 IoU. Best checkpoint is step 660 (highest minimum class IoU), mean IoU 0.979094, loss 0.014073.
+There were temporary loss/IoU spikes around steps 80 and 380, followed by recovery without intervention. This suggests optimization sensitivity; no nonfinite loss/gradient failure was observed. Weed cluster was the slowest class to memorize.
+The four fixed crops are 64x64 windows AFTER the unchanged baseline resize to 256x256. All five labels are present; these selected crops happen to have no ignored pixels. Ignore-priority and zero-gradient behavior for 255 were checked separately with synthetic tests. Weights were recomputed on the fixed subset using the baseline formula; this is intentionally an easier diagnostic, not a fair new baseline comparison.
+The saved checkpoint was reloaded and its per-class metrics reproduced exactly. Baseline source and archived baseline evidence remain unchanged. Experiment 2 has not been implemented or started.
